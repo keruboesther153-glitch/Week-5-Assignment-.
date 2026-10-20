@@ -1,0 +1,397 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "47d42dd8",
+   "metadata": {},
+   "source": [
+    "# Week 5 Assignment: Building Your First Supervised Machine Learning Model\n",
+    "\n",
+    "**Project:** AI in Health — Diabetes Risk Prediction  \n",
+    "**Student:** Erick Munala Sifuna\n",
+    "\n",
+    "## Objective\n",
+    "This notebook extends the Week 4 descriptive-statistics and correlation work by using the Pima Indians Diabetes Database to predict the recorded diabetes outcome.\n",
+    "\n",
+    "The workflow identifies the target and predictors, splits the data into training and test sets, trains two supervised classification models, predicts outcomes on the test set, evaluates each model, and compares their performance.\n",
+    "\n",
+    "**Problem type:** Classification. The target `Outcome` has two classes: `0` (no diabetes recorded) and `1` (diabetes recorded)."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "1977c680",
+   "metadata": {},
+   "source": [
+    "## 1. Import libraries"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "17ea1c71",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "import urllib.request\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "from sklearn.pipeline import Pipeline\n",
+    "from sklearn.impute import SimpleImputer\n",
+    "from sklearn.preprocessing import StandardScaler\n",
+    "from sklearn.linear_model import LogisticRegression\n",
+    "from sklearn.ensemble import RandomForestClassifier\n",
+    "from sklearn.metrics import (\n",
+    "    accuracy_score, precision_score, recall_score, f1_score,\n",
+    "    confusion_matrix, classification_report, ConfusionMatrixDisplay,\n",
+    "    roc_auc_score\n",
+    ")\n",
+    "\n",
+    "RANDOM_STATE = 42\n",
+    "pd.set_option(\"display.max_columns\", None)\n",
+    "pd.set_option(\"display.float_format\", lambda value: f\"{value:.3f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "525e57fe",
+   "metadata": {},
+   "source": [
+    "## 2. Load and inspect the dataset\n",
+    "\n",
+    "The dataset contains measurements such as glucose, BMI, blood pressure, age, and a binary outcome. The code downloads the CSV if it is not already available. If downloading fails, upload `diabetes.csv` or the original Pima CSV to the notebook session."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a939a9b2",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "DATA_URL = \"https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.data.csv\"\n",
+    "DATA_PATH = \"pima-indians-diabetes.data.csv\"\n",
+    "COLUMN_NAMES = [\n",
+    "    \"Pregnancies\", \"Glucose\", \"BloodPressure\", \"SkinThickness\",\n",
+    "    \"Insulin\", \"BMI\", \"DiabetesPedigreeFunction\", \"Age\", \"Outcome\"\n",
+    "]\n",
+    "\n",
+    "if not os.path.exists(DATA_PATH) and not os.path.exists(\"diabetes.csv\"):\n",
+    "    try:\n",
+    "        urllib.request.urlretrieve(DATA_URL, DATA_PATH)\n",
+    "        print(\"Dataset downloaded.\")\n",
+    "    except Exception as exc:\n",
+    "        print(\"Automatic download failed:\", exc)\n",
+    "        print(\"Upload a Pima diabetes CSV file and set DATA_PATH to its filename.\")\n",
+    "\n",
+    "if os.path.exists(\"diabetes.csv\"):\n",
+    "    df = pd.read_csv(\"diabetes.csv\")\n",
+    "elif os.path.exists(DATA_PATH):\n",
+    "    df = pd.read_csv(DATA_PATH, header=None, names=COLUMN_NAMES)\n",
+    "else:\n",
+    "    raise FileNotFoundError(\"No diabetes CSV found. Upload the dataset and rerun this cell.\")\n",
+    "\n",
+    "# If a raw file was supplied with no column names, assign the expected names.\n",
+    "if \"Outcome\" not in df.columns and df.shape[1] == 9:\n",
+    "    df.columns = COLUMN_NAMES\n",
+    "\n",
+    "print(\"Dataset shape:\", df.shape)\n",
+    "print(\"Columns:\", list(df.columns))\n",
+    "display(df.head())\n",
+    "display(df.info())"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "8b0c2d3c",
+   "metadata": {},
+   "source": [
+    "## 3. Identify target and features\n",
+    "\n",
+    "The target/output is `Outcome`. The predictors are the available clinical and demographic measurements. In this dataset, zero values in Glucose, BloodPressure, SkinThickness, Insulin, and BMI can represent missing measurements; those zeros are changed to missing values before imputation. Pregnancies may legitimately be zero."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "61b44117",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "target_col = \"Outcome\"\n",
+    "candidate_features = [\n",
+    "    \"Pregnancies\", \"Glucose\", \"BloodPressure\", \"SkinThickness\",\n",
+    "    \"Insulin\", \"BMI\", \"DiabetesPedigreeFunction\", \"Age\"\n",
+    "]\n",
+    "feature_cols = [col for col in candidate_features if col in df.columns]\n",
+    "\n",
+    "if target_col not in df.columns:\n",
+    "    raise ValueError(\"The dataset must contain an 'Outcome' target column.\")\n",
+    "if not feature_cols:\n",
+    "    raise ValueError(\"No expected predictor columns were found; inspect df.columns.\")\n",
+    "\n",
+    "model_data = df[feature_cols + [target_col]].copy()\n",
+    "for col in feature_cols + [target_col]:\n",
+    "    model_data[col] = pd.to_numeric(model_data[col], errors=\"coerce\")\n",
+    "\n",
+    "for col in [\"Glucose\", \"BloodPressure\", \"SkinThickness\", \"Insulin\", \"BMI\"]:\n",
+    "    if col in model_data.columns:\n",
+    "        model_data.loc[model_data[col] == 0, col] = np.nan\n",
+    "\n",
+    "model_data = model_data.dropna(subset=[target_col])\n",
+    "model_data = model_data[model_data[target_col].isin([0, 1])]\n",
+    "X = model_data[feature_cols]\n",
+    "y = model_data[target_col].astype(int)\n",
+    "\n",
+    "print(\"Target/output:\", target_col)\n",
+    "print(\"Features:\", feature_cols)\n",
+    "print(\"Class counts (0 = no diabetes recorded, 1 = diabetes recorded):\")\n",
+    "display(y.value_counts().sort_index().rename(\"count\").to_frame())\n",
+    "print(\"Usable rows:\", len(model_data))\n",
+    "display(model_data.head())"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "3bdc6404",
+   "metadata": {},
+   "source": [
+    "## 4. Split data into training and test sets\n",
+    "A stratified split helps preserve the proportion of each outcome class in both sets."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d2d66eab",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "X_train, X_test, y_train, y_test = train_test_split(\n",
+    "    X, y,\n",
+    "    test_size=0.20,\n",
+    "    random_state=RANDOM_STATE,\n",
+    "    stratify=y\n",
+    ")\n",
+    "print(\"Training observations:\", len(X_train))\n",
+    "print(\"Test observations:\", len(X_test))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "d5e1d686",
+   "metadata": {},
+   "source": [
+    "## 5. Select and train two classification models\n",
+    "\n",
+    "- **Logistic Regression:** a common classification baseline. Features are imputed and standardized.\n",
+    "- **Random Forest Classifier:** an ensemble of decision trees that can capture nonlinear patterns and interactions.\n",
+    "\n",
+    "Preprocessing is fitted within each pipeline using training data only."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d0706393",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "logistic_model = Pipeline(steps=[\n",
+    "    (\"imputer\", SimpleImputer(strategy=\"median\")),\n",
+    "    (\"scaler\", StandardScaler()),\n",
+    "    (\"model\", LogisticRegression(max_iter=2000, random_state=RANDOM_STATE))\n",
+    "])\n",
+    "\n",
+    "forest_model = Pipeline(steps=[\n",
+    "    (\"imputer\", SimpleImputer(strategy=\"median\")),\n",
+    "    (\"model\", RandomForestClassifier(\n",
+    "        n_estimators=300,\n",
+    "        random_state=RANDOM_STATE,\n",
+    "        min_samples_leaf=3,\n",
+    "        class_weight=\"balanced\"\n",
+    "    ))\n",
+    "])\n",
+    "\n",
+    "logistic_model.fit(X_train, y_train)\n",
+    "forest_model.fit(X_train, y_train)\n",
+    "print(\"Both classification models have been trained.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7e1c1916",
+   "metadata": {},
+   "source": [
+    "## 6. Make predictions on the test data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "ae49b4f9",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "models = {\n",
+    "    \"Logistic Regression\": logistic_model,\n",
+    "    \"Random Forest\": forest_model\n",
+    "}\n",
+    "predictions = {name: model.predict(X_test) for name, model in models.items()}\n",
+    "probabilities = {name: model.predict_proba(X_test)[:, 1] for name, model in models.items()}\n",
+    "\n",
+    "prediction_table = pd.DataFrame({\n",
+    "    \"Actual Outcome\": y_test,\n",
+    "    \"Logistic Regression Prediction\": predictions[\"Logistic Regression\"],\n",
+    "    \"Random Forest Prediction\": predictions[\"Random Forest\"]\n",
+    "}, index=y_test.index)\n",
+    "display(prediction_table.head(15))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7e7acdf8",
+   "metadata": {},
+   "source": [
+    "## 7. Evaluate model performance\n",
+    "\n",
+    "We use:\n",
+    "- **Accuracy:** proportion of all predictions that are correct.\n",
+    "- **Precision:** proportion of predicted positive cases that are truly positive.\n",
+    "- **Recall:** proportion of actual positive cases detected by the model.\n",
+    "- **F1-score:** harmonic mean of precision and recall.\n",
+    "- **ROC-AUC:** how well predicted probabilities rank positive cases above negative cases.\n",
+    "\n",
+    "For a health-related screening context, recall can be important because false negatives may miss people who need further assessment. No metric alone is enough to judge clinical usefulness."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "8017fcd1",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "metric_rows = []\n",
+    "for name, pred in predictions.items():\n",
+    "    row = {\n",
+    "        \"Accuracy\": accuracy_score(y_test, pred),\n",
+    "        \"Precision\": precision_score(y_test, pred, zero_division=0),\n",
+    "        \"Recall\": recall_score(y_test, pred, zero_division=0),\n",
+    "        \"F1-score\": f1_score(y_test, pred, zero_division=0),\n",
+    "        \"ROC-AUC\": roc_auc_score(y_test, probabilities[name])\n",
+    "    }\n",
+    "    metric_rows.append(pd.Series(row, name=name))\n",
+    "\n",
+    "metrics = pd.DataFrame(metric_rows)\n",
+    "display(metrics.round(4))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "be2ae101",
+   "metadata": {},
+   "source": [
+    "## 8. Confusion matrices"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "5c8c1597",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "fig, axes = plt.subplots(1, 2, figsize=(10, 4))\n",
+    "for ax, (name, pred) in zip(axes, predictions.items()):\n",
+    "    cm = confusion_matrix(y_test, pred, labels=[0, 1])\n",
+    "    disp = ConfusionMatrixDisplay(\n",
+    "        confusion_matrix=cm,\n",
+    "        display_labels=[\"No diabetes (0)\", \"Diabetes (1)\"]\n",
+    "    )\n",
+    "    disp.plot(ax=ax, colorbar=False)\n",
+    "    ax.set_title(name)\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "fc271969",
+   "metadata": {},
+   "source": [
+    "## 9. Compare the models"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a6a07547",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Choose the model with the highest F1-score as a balanced comparison criterion.\n",
+    "best_f1_model = metrics[\"F1-score\"].idxmax()\n",
+    "best_recall_model = metrics[\"Recall\"].idxmax()\n",
+    "best_auc_model = metrics[\"ROC-AUC\"].idxmax()\n",
+    "\n",
+    "print(\"Highest F1-score:\", best_f1_model)\n",
+    "print(\"Highest recall:\", best_recall_model)\n",
+    "print(\"Highest ROC-AUC:\", best_auc_model)\n",
+    "\n",
+    "print(\"\\nModel comparison:\")\n",
+    "print(metrics.round(4).to_string())\n",
+    "print(\"\\nInterpretation guide:\")\n",
+    "print(\"- Compare precision and recall together, not accuracy alone.\")\n",
+    "print(\"- Higher recall means more positive cases were identified, but may come with more false positives.\")\n",
+    "print(\"- Higher F1-score balances precision and recall.\")\n",
+    "print(\"- Higher ROC-AUC indicates better ranking discrimination across thresholds.\")\n",
+    "print(\"- Use the generated metrics and confusion matrices to write the final comparison.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "993e3e8b",
+   "metadata": {},
+   "source": [
+    "## 10. Discussion, limitations, and conclusion\n",
+    "\n",
+    "### Discussion\n",
+    "The metric table and confusion matrices show how Logistic Regression and Random Forest perform on the held-out test set. The preferred model depends on the purpose: screening may place greater importance on recall, while follow-up testing and resource constraints may require balancing recall and precision.\n",
+    "\n",
+    "### Limitations\n",
+    "- The dataset is a relatively small, historical dataset and may not represent all populations.\n",
+    "- Some zero measurements are treated as missing; this is a data-cleaning assumption.\n",
+    "- Results depend on the train/test split and model settings.\n",
+    "- The model predicts the dataset's recorded outcome; it does not diagnose diabetes.\n",
+    "- This exercise is educational. Predictions must not be used as medical advice or to make real clinical decisions without appropriate validation and professional oversight.\n",
+    "\n",
+    "### Conclusion\n",
+    "This notebook completes the supervised classification workflow: it defines the outcome and predictors, splits the dataset, trains two models, generates test predictions, evaluates them using multiple metrics, and compares their performance.\n",
+    "\n",
+    "## References\n",
+    "1. Pima Indians Diabetes Database (raw CSV used for this exercise): https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.data.csv\n",
+    "2. Scikit-learn Logistic Regression: https://scikit-learn.org/stable/modules/linear_model.html#logistic-regression\n",
+    "3. Scikit-learn Random Forests: https://scikit-learn.org/stable/modules/ensemble.html#forests\n",
+    "4. Scikit-learn model evaluation: https://scikit-learn.org/stable/modules/model_evaluation.html"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.x"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
